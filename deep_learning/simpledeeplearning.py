@@ -1,10 +1,11 @@
+import time
 import numpy as np
 import matplotlib.pyplot as plt
 
 
 class SimpleDeepLearning:
     def __init__(self, nn_sizes_list_=None, act_hidden_='tanh', act_output_='sigmoid',
-                 epochs_ = 20, batch_size_=20, eta_ = 1, steps_cost_ = 1,):
+                 epochs_ = 2000, batch_size_=20, eta_=0.0075, steps_cost_=100):
         if nn_sizes_list_ is None:
             raise ValueError('Error! nn_sizes_list_ is None')
         self.nn_sizes_list = nn_sizes_list_
@@ -54,11 +55,25 @@ class SimpleDeepLearning:
     def __tanh_devrivate(Z_):
         return 1 - np.power(np.tanh(Z_), 2)
     
+    # --- 3. relu funtion ---
+    @staticmethod
+    def __relu(Z_):
+        Z_[np.isnan(Z_)] = 0
+        return np.maximum(0,Z_)
+    
+    @staticmethod
+    def __relu_devrivate(Z_):
+        A = np.ones(Z_.shape)
+        A[Z_ <= 0] = 0
+        return A
+    
     # --- 9. cost functions ---
     @staticmethod
     def __cost_mlm(sigma_, y_):
         m = y_.shape[0]
-        cost = - (1 / m) * (y_.T.dot(np.log(sigma_)) + (1-y_).T.dot(np.log(1 - sigma_)))
+        ls1 = np.log(sigma_); ls1[np.isnan(ls1) | np.isinf(ls1)] = 0
+        ls2 = np.log(1 - sigma_); ls2[np.isnan(ls2) | np.isinf(ls2)] = 0
+        cost = - (1 / m) * (y_.T.dot(ls1) + (1-y_).T.dot(ls2))
         return np.squeeze(cost)
     
     # ==================== I. Build-up a Neural Netwrok ====================
@@ -78,11 +93,11 @@ class SimpleDeepLearning:
                 self.O.append(np.zeros((ni + 1, nj + 1)))
                 self.O[l][0 ,  :] = 0  # the settings are for checking wiht coursera
                 self.O[l][: , 0 ] = 0
-                self.O[l][1:, 1:] = (np.random.randn(nj, ni) * 0.01).T
+                self.O[l][1:, 1:] = (np.random.randn(nj, ni) / np.sqrt(ni)).T
             else:
                 self.O.append(np.zeros((ni + 1, nj)))
                 self.O[l][0 ,  :] = 0
-                self.O[l][1:,  :] = (np.random.randn(nj, ni) * 0.01).T
+                self.O[l][1:,  :] = (np.random.randn(nj, ni) / np.sqrt(ni)).T
         self.O.append(None)
         
     
@@ -111,12 +126,15 @@ class SimpleDeepLearning:
             self.F[l][:, 0] = 1
         self.Z[-1] = self.F[-2].dot(self.O[-2])
         self.F[-1] = actfun_output_(self.Z[-1])
+        
 
     def __Backward(self, devfun_hidden_, devfun_output_, y_):
         sa = self.F[-1]
         self.B[-1] = devfun_output_(self.Z[-1]) * ( sa - y_) / (sa * (1 - sa))
         for l in range(self.L-2, 0, -1):
             self.B[l] = devfun_hidden_(self.Z[l]) * (self.B[l+1].dot(self.O[l].T))
+        for l in range(self.L):
+            self.B[l][np.isnan(self.B[l])] = 0          # force zero
      
     def __Forward_Backward(self, X_, y_):
         data_size = X_.shape[0] 
@@ -127,18 +145,21 @@ class SimpleDeepLearning:
         
         
     # ==================== III. Gradient Descent ====================
-    def __omegas_update(self, data_size_):
+    def __omegas_update(self):
         for l in range(self.L - 1):
             Fa = self.F[l]
             Bb = self.B[l + 1]
-            gradient_l = (1 / data_size_) * Fa.T.dot(Bb)
+            data_size = Fa.shape[0]
+            gradient_l = (1 / data_size) * Fa.T.dot(Bb)
+            gradient_l[np.isnan(gradient_l)] = 0               # force zero
             self.O[l] = (self.O[l] - self.eta * gradient_l)
             if l < self.L - 2:
                 self.O[l][: , 0 ] = 0
             
     def __minibatch(self, X_, y_):
         data_size = X_.shape[0]
-        for i in range(self.epochs):
+        m = min(data_size, self.batch_size)
+        for i in range(self.epochs + 1):
             shuffled_indices = np.random.permutation(data_size)
             X_shuffled = X_[shuffled_indices]
             y_shuffled = y_[shuffled_indices]
@@ -146,11 +167,12 @@ class SimpleDeepLearning:
                 xr = X_shuffled[r:r + self.batch_size]
                 yr = y_shuffled[r:r + self.batch_size]
                 self.__Forward_Backward(xr, yr)
-                self.__omegas_update(data_size)
-                iterations = (r + i * data_size) // self.batch_size
+                self.__omegas_update()
+                iterations = (r + i * data_size) // m
                 if iterations % self.steps_cost == 0:
                     cost = self.__cost_mlm(self.F[-1], yr)
                     self.costs.append(cost)
+                    print('epoch={}, cost={}'.format(i, cost))            
     
     # ==================== IV. Initialization Before Fitting ====================   
     def __init_funs_hidden(self):
@@ -160,6 +182,9 @@ class SimpleDeepLearning:
         elif self.act_hidden == 'tanh':
             self.actfun_hidden = self.__tanh
             self.actdev_hidden = self.__tanh_devrivate
+        elif self.act_hidden == 'relu':
+            self.actfun_hidden = self.__relu
+            self.actdev_hidden = self.__relu_devrivate
         elif self.act_hidden == 'test':
             self.actfun_hidden = self.__act_test
             self.actdev_hidden = self.__dev_test
@@ -177,7 +202,7 @@ class SimpleDeepLearning:
             raise ValueError('act_hidden = {} is not available'.format(self.act_hidden))          
         
     def __initializaiton(self):
-        np.random.seed(2)
+        np.random.seed(1)
         self.__init_funs_hidden()
         self.__init_funs_output()
         self.__create_omega()
@@ -209,7 +234,8 @@ class SimpleDeepLearning:
     
         
 def main():
-    sdl = SimpleDeepLearning(nn_sizes_list_=[2, 4, 1])
+    sdl = SimpleDeepLearning(nn_sizes_list_=[2, 7, 5, 3, 1], act_hidden_='relu',
+                             epochs_ = 235)
     np.random.seed(1)
     X = np.random.randn(2, 3).T
     y = np.array([[1.74481176], [-0.7612069], [0.3190391]])
@@ -217,7 +243,6 @@ def main():
     sdl.plot_cost()
     plt.show()
     y_pred = sdl.predict(X)
-    print(y_pred)
     
     
     
