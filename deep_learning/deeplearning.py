@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 class DeepLearning:
     def __init__(self, nn_sizes_list_=None, act_hidden_='tanh', act_output_='sigmoid',
                  epochs_=2000, batch_size_=20, eta_=0.0075, steps_cost_=100,
-                 lambd_=0, dropout_probs_=None, gd_check_=False):
+                 lambd_=0, dropout_probs_=None, adam_=False, gd_check_=False):
         if nn_sizes_list_ is None:
             raise ValueError('Error! nn_sizes_list_ is None')
         # --- input attributes ---
@@ -19,15 +19,21 @@ class DeepLearning:
         self.steps_cost = steps_cost_
         self.lambd =lambd_
         self.dropout_probs = dropout_probs_
+        self.adam = adam_
         self.gd_check = gd_check_
         # -- class attributes ---
         self.L = len(self.nn_sizes_list)
-        self.O = None
-        self.Z = None
-        self.F = None
-        self.B = None
-        self.D = None
-        self.G = None
+        self.O = None   # omega and b
+        self.Z = None   # X dot O + b
+        self.F = None   # sigma(Z)
+        self.B = None   # partial_C / partial_Z
+        self.D = None   # Dropdout matrix
+        self.G = None   # gradients
+        self.V = None   # for momentum method 
+        self.S = None   # for RMS method
+        self.Vbeta = 0
+        self.Sbeta = 0
+        self.i = 0
         self.actfun_hidden = None
         self.actdev_hidden = None
         self.actfun_output = None
@@ -58,7 +64,16 @@ class DeepLearning:
                 self.O.append(np.zeros((ni + 1, nj)))
                 self.O[l][0 ,  :] = 0
                 self.O[l][1:,  :] = (np.random.randn(nj, ni) * np.sqrt(1 / ni)).T
-        self.O.append(None)             # makes O having same length as Z, F, B 
+        self.O.append(None)             # makes O having same length as Z, F, B
+        self.V = list()
+        self.S = list()
+        for l in range(self.L - 1):
+            self.V.append(self.O[l].copy())
+            self.S.append(self.O[l].copy())
+            self.V[l] = 0
+            self.S[l] = 0
+        self.V.append(None)
+        self.S.append(None)
         
     
     # ==================== II. Forward/Backward Propogation ====================
@@ -140,13 +155,19 @@ class DeepLearning:
             gradient_l[np.isnan(gradient_l)] = 0               # force zero
             gradient_l += gradient_l_reg
             self.G.append(gradient_l)
+            self.V[l] = self.Vbeta * self.V[l] + (1 - self.Vbeta) * gradient_l
+            self.S[l] = self.Sbeta * self.S[l] + (1 - self.Sbeta) * (gradient_l * gradient_l)
         self.G.append(None)
         if self.gd_check:
             norm = self.__GD_check()
             if norm > 1e-5:
                 print('In gradient check, norm = {}'.format(norm))
         for l in range(self.L - 1):
-            self.O[l] = (self.O[l] - self.eta * self.G[l])
+            Vcor = self.V[l] / (1 - (self.Vbeta ** (self.i+1)))
+            Scor = self.S[l] / (1 - (self.Sbeta ** (self.i+1)))
+            if not self.adam:
+                Scor = 1
+            self.O[l] = (self.O[l] - self.eta * (1 / np.sqrt(Scor + 1e-8)) * Vcor)
             if l < self.L - 2:
                 self.O[l][: , 0 ] = 0
             
@@ -155,12 +176,11 @@ class DeepLearning:
         data_size = X_.shape[0]
         m = min(data_size, self.batch_size)
         for i in range(self.epochs + 1):
-#            shuffled_indices = np.random.permutation(data_size)
-#            X_shuffled = X_[shuffled_indices]
-#            y_shuffled = y_[shuffled_indices]
-            X_shuffled = X_
-            y_shuffled = y_
-            for r in range(0, data_size, self.batch_size): 
+            shuffled_indices = np.random.permutation(data_size)
+            X_shuffled = X_[shuffled_indices]
+            y_shuffled = y_[shuffled_indices]
+            for r in range(0, data_size, self.batch_size):
+                self.i += 1
                 xr = X_shuffled[r:r + self.batch_size]
                 yr = y_shuffled[r:r + self.batch_size]
                 self.yr = yr
@@ -206,6 +226,9 @@ class DeepLearning:
         self.__init_funs_output()
         self.__create_omega()
         self.costs = list()
+        if self.adam:
+            self.Vbeta = 0.9
+            self.Sbeta = 0.999
     
     
     # ==================== V. Fitting Function ====================
@@ -354,9 +377,9 @@ class DeepLearning:
                     Om[l][i,j] -= epsilon_
                     cost_m = self.__cost_GD_check(Om)
                     Gc[l][i,j] = (cost_p - cost_m) / (2 * epsilon_)
-                    dQa  += self.G[l][i,j] ** 2
-                    dQb  += Gc[l][i,j] ** 2
-                    dQab += (self.G[l][i,j] - Gc[l][i,j]) ** 2
+                    dQa  += np.sqrt(self.G[l][i,j] ** 2)
+                    dQb  += np.sqrt(Gc[l][i,j] ** 2)
+                    dQab += np.sqrt((self.G[l][i,j] - Gc[l][i,j]) ** 2)
         return dQab / (dQa + dQb)
 
         
