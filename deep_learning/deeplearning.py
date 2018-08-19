@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 
 
 class DeepLearning:
-    def __init__(self, nn_sizes_list_=None, act_hidden_='tanh', act_output_='sigmoid',
+    def __init__(self, nn_sizes_list_=None, act_hidden_='tanh', act_output_='sigmoid', cost_='mlm', 
                  epochs_=2000, batch_size_=20, eta_=0.0075, steps_cost_=100,
                  lambd_=0, dropout_probs_=None, adam_=False, gd_check_=False):
         if nn_sizes_list_ is None:
@@ -13,6 +13,7 @@ class DeepLearning:
         self.nn_sizes_list = nn_sizes_list_
         self.act_hidden = act_hidden_
         self.act_output = act_output_
+        self.cost = cost_
         self.epochs = epochs_
         self.batch_size = batch_size_
         self.eta = eta_
@@ -38,9 +39,10 @@ class DeepLearning:
         self.actdev_hidden = None
         self.actfun_output = None
         self.actdev_output = None
+        self.costfun = None
+        self.costdev = None
         self.costs = None
         self.yr = None
-    
     
     # ==================== I. Build-up a Neural Netwrok ====================
     def __create_testO(self):
@@ -124,7 +126,7 @@ class DeepLearning:
 
     def __Backward(self, devfun_hidden_, devfun_output_, y_):
         sa = self.F[-1]
-        self.B[-1] = devfun_output_(self.Z[-1]) * self.__cost_devrivate_mlm(sa, y_)
+        self.B[-1] = devfun_output_(self.Z[-1]) * self.costdev(sa, y_)
         for l in range(self.L-2, 0, -1):
             self.B[l] = devfun_hidden_(self.Z[l]) * (self.B[l+1].dot(self.O[l].T))
             self.B[l] = self.B[l] * self.D[l] 
@@ -145,12 +147,12 @@ class DeepLearning:
     # ==================== III. Gradient Descent ====================
     def __omegas_update(self):
         data_size = self.Z[0].shape[0]
-        gradients_reg = self.__L2_derivate(data_size)
+        gradients_reg = self.__L2_derivative(data_size)
         self.G = list()
         for l in range(self.L - 1):
             Fa = self.F[l]
             Bb = self.B[l + 1]
-            gradient_l = (1 / data_size) * Fa.T.dot(Bb)
+            gradient_l = Fa.T.dot(Bb)
             gradient_l_reg = gradients_reg[l]
             gradient_l[np.isnan(gradient_l)] = 0               # force zero
             gradient_l += gradient_l_reg
@@ -187,23 +189,22 @@ class DeepLearning:
                 self.__Forward_Backward(xr, yr)            
                 iterations = (r + i * data_size) // m
                 if iterations % self.steps_cost == 0:
-                    cost = self.__cost_mlm(self.F[-1], yr) + self.__L2_cost(xr.shape[0])
+                    cost = self.costfun(self.F[-1], yr) + self.__L2_cost(xr.shape[0])
                     self.costs.append(cost)
                     print('epoch={}, cost={}'.format(i, cost))            
                 self.__omegas_update()
-                
                 
     # ==================== IV. Initialization Before Fitting ====================   
     def __init_funs_hidden(self):
         if self.act_hidden == 'sigmoid':
             self.actfun_hidden = self.__sigmoid
-            self.actdev_hidden = self.__sigmoid_devrivate
+            self.actdev_hidden = self.__sigmoid_derivative
         elif self.act_hidden == 'tanh':
             self.actfun_hidden = self.__tanh
-            self.actdev_hidden = self.__tanh_devrivate
+            self.actdev_hidden = self.__tanh_derivative
         elif self.act_hidden == 'relu':
             self.actfun_hidden = self.__relu
-            self.actdev_hidden = self.__relu_devrivate
+            self.actdev_hidden = self.__relu_derivative
         elif self.act_hidden == 'test':
             self.actfun_hidden = self.__act_test
             self.actdev_hidden = self.__dev_test
@@ -213,17 +214,28 @@ class DeepLearning:
     def __init_funs_output(self):
         if self.act_output == 'sigmoid':
             self.actfun_output = self.__sigmoid
-            self.actdev_output = self.__sigmoid_devrivate
+            self.actdev_output = self.__sigmoid_derivative
         elif self.act_output == 'test':
             self.actfun_output = self.__act_test
             self.actdev_output = self.__dev_test
         else:
-            raise ValueError('act_hidden = {} is not available'.format(self.act_hidden))          
+            raise ValueError('act_hidden = {} is not available'.format(self.act_hidden))
+
+    def __init_funs_cost(self):
+        if self.cost == 'mlm':
+            self.costfun = self.__cost_mlm
+            self.costdev = self.__cost_derivative_mlm
+        elif self.cost == 'corr':
+            self.costfun = self.__cost_corr
+            self.costdev = self.__cost_derivative_corr
+        else:
+            raise ValueError('cost_ = {} is not available'.format(self.cost))
         
     def __initializaiton(self):
         np.random.seed(3)
         self.__init_funs_hidden()
         self.__init_funs_output()
+        self.__init_funs_cost()
         self.__create_omega()
         self.costs = list()
         if self.adam:
@@ -243,6 +255,14 @@ class DeepLearning:
         self.__create_dropout_d(dropout_=False)
         self.__Forward(self.actfun_hidden, self.actfun_output, Xb)
         return (self.F[-1] > 0.5) * 1
+
+    def scores(self, X_):
+        data_size = X_.shape[0]
+        Xb = np.c_[np.ones((data_size, 1)), X_]
+        self.__build_ZFB(data_size)
+        self.__create_dropout_d(dropout_=False)
+        self.__Forward(self.actfun_hidden, self.actfun_output, Xb)
+        return self.F[-1]
      
         
     # ==================== VI. Plot Functions ====================
@@ -272,7 +292,7 @@ class DeepLearning:
         return 1 / (1 + np.exp(-Z_))
     
     @staticmethod
-    def __sigmoid_devrivate(Z_):
+    def __sigmoid_derivative(Z_):
         return np.exp(-Z_) / ((1 + np.exp(-Z_)) ** 2)
     
     # --- 2. tanh funtion ---
@@ -281,17 +301,17 @@ class DeepLearning:
         return np.tanh(Z_)
     
     @staticmethod
-    def __tanh_devrivate(Z_):
+    def __tanh_derivative(Z_):
         return 1 - np.power(np.tanh(Z_), 2)
     
     # --- 3. relu funtion ---
     @staticmethod
     def __relu(Z_):
         Z_[np.isnan(Z_)] = 0
-        return np.maximum(0,Z_)
+        return np.maximum(0, Z_)
     
     @staticmethod
-    def __relu_devrivate(Z_):
+    def __relu_derivative(Z_):
         A = np.ones(Z_.shape)
         A[Z_ <= 0] = 0
         return A
@@ -307,12 +327,39 @@ class DeepLearning:
         return cost
     
     @staticmethod
-    def __cost_devrivate_mlm(sigma_, y_):
+    def __cost_derivative_mlm(sigma_, y_):
+        m = y_.shape[0]
         sigma_[(sigma_ == 1) | (sigma_ == 0)] = np.nan
-        ret = ( sigma_ - y_) / (sigma_ * (1 - sigma_))
+        ret = (sigma_ - y_) / (sigma_ * (1 - sigma_))
         ret[np.isnan(ret)] = 0
-        return ret
-    
+        return ret / m
+
+    @staticmethod
+    def __cost_corr(sigma_, y_):
+        size = y_.shape[0]
+        ybar = np.mean(y_)
+        sbar = np.mean(sigma_)
+        cov = np.mean(sigma_ * (y_ - ybar))
+        A = cov**2
+        B = np.mean((sigma_ - sbar)**2)
+        C = np.mean((y_ - ybar)**2)
+        r2 = A / (B * C)
+        return (1 - r2)
+
+    @staticmethod
+    def __cost_derivative_corr(sigma_, y_):
+        size = y_.shape[0]
+        ybar = np.mean(y_)
+        sbar = np.mean(sigma_)
+        cov = np.mean(sigma_ * (y_ - ybar))
+        A = cov**2
+        B = np.mean((sigma_ - sbar)**2)
+        C = np.mean((y_ - ybar)**2)
+        tmp = np.mean(sigma_ * (y_ - ybar))
+        pA = (2 / size) * tmp * (y_ - ybar) 
+        pB = (2 / size) * (sigma_ - sbar)
+        return - (1 / ((B**2) * C)) * (pA * B - A * pB)
+
     # --- 10. regularization ---
     def __L2_cost(self, data_size_):
         O_sum=0
@@ -323,8 +370,8 @@ class DeepLearning:
                 O_local[:, 0] = 0
             O_sum += np.nansum(O_local ** 2)
         return (1 / data_size_) * (self.lambd / 2) * O_sum
-    
-    def __L2_derivate(self, data_size_):
+
+    def __L2_derivative(self, data_size_):
         L2_dev = list()
         for l in range(self.L - 1):
             L2_dev.append((self.lambd / data_size_) * self.O[l])
@@ -333,6 +380,7 @@ class DeepLearning:
                 self.O[l][:, 0] = 0
         L2_dev.append(None)
         return L2_dev
+
 
     # ==================== Appendex. Gradient Checking ====================
     def __Forward_GD_check(self, actfun_hidden_, actfun_output_, O_):
@@ -348,7 +396,7 @@ class DeepLearning:
     
     def __cost_GD_check(self, O_):
         self.__Forward_GD_check(self.actfun_hidden, self.actfun_output, O_)
-        return self.__cost_mlm(self.F[-1], self.yr)
+        return self.costfun(self.F[-1], self.yr)
     
     def __O_copy(self):
         Oc = list()
@@ -371,12 +419,12 @@ class DeepLearning:
             for i in range(ni):
                 for j in range(1, nj):
                     Op = self.__O_copy()
-                    Op[l][i,j] += epsilon_
+                    Op[l][i, j] += epsilon_
                     cost_p = self.__cost_GD_check(Op)
                     Om = self.__O_copy()
-                    Om[l][i,j] -= epsilon_
+                    Om[l][i, j] -= epsilon_
                     cost_m = self.__cost_GD_check(Om)
-                    Gc[l][i,j] = (cost_p - cost_m) / (2 * epsilon_)
+                    Gc[l][i, j] = (cost_p - cost_m) / (2 * epsilon_)
                     dQa  += np.sqrt(self.G[l][i,j] ** 2)
                     dQb  += np.sqrt(Gc[l][i,j] ** 2)
                     dQab += np.sqrt((self.G[l][i,j] - Gc[l][i,j]) ** 2)
