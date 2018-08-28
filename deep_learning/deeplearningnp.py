@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-class DeepLearning:
+class DeepLearningNP:
     def __init__(self, nn_sizes_list_=None, act_hidden_='tanh', act_output_='sigmoid', cost_='mlm', 
                  epochs_=2000, batch_size_=20, eta_=0.0075, steps_cost_=100,
                  lambd_=0, dropout_probs_=None, adam_=False, gd_check_=False):
